@@ -10,7 +10,10 @@ on:
 
 jobs:
   metal:
-    name: Metal (macos-latest, Apple Silicon) — EXPECTED FAIL until naga is fixed
+    # NOTE: currently PASSES — the isolated 3 kernels are NOT the bug (see README
+    # STATUS). Will go red once the upstream producing kernels are added and the
+    # trigger is captured; that's the worker's bisect target.
+    name: Metal (macos-latest, Apple Silicon)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4

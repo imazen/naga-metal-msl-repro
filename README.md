@@ -1,4 +1,21 @@
-# naga Metal (MSL) miscompile — standalone repro + iterate harness
+# naga Metal (MSL) miscompile — isolation + iterate harness
+
+> ## ⚠️ STATUS (2026-06-04): this isolated chain does NOT yet reproduce on Metal
+>
+> The 3-kernel synthetic chain in `src/main.rs` **PASSES on Apple-Silicon Metal**
+> (confirmed in CI: 64×64 / 96×80 / 128×128 all `max_err ≈ 1e-6`). The full
+> zensim pipeline it was extracted from **does** fail on Metal (fixed `1.098` at
+> scattered pixels, sizes ≥96). So this harness currently *rules out* the
+> `per_scale` + `upsample` kernels: with clean, host-uploaded inputs they are
+> translated correctly on Metal.
+>
+> **Therefore the trigger is upstream of these kernels** — in the GPU-*produced*
+> persist planes (the feature/blur/downscale kernels) or the producer→consumer
+> storage read-after-write across the full kernel set. (Consistent with the
+> score path averaging those same planes and staying correct, while the
+> per-pixel diffmap surfaces the few bad values.) The next step is to add the
+> upstream producing kernels here (or vendor the real zensim feature chain) and
+> bisect via the Metal CI job until it fails.
 
 A compute shader that is **correct on Vulkan and CUDA** returns wrong results on
 **Apple Metal**: a scattered subset of output elements come back holding a
