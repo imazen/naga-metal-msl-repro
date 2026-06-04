@@ -16,6 +16,11 @@
 > per-pixel diffmap surfaces the few bad values.) The next step is to add the
 > upstream producing kernels here (or vendor the real zensim feature chain) and
 > bisect via the Metal CI job until it fails.
+>
+> **➡️ [`HANDOFF.md`](./HANDOFF.md) is the playbook** — the single decisive
+> experiment to run first (`debug_read_persist_plane` on Metal), the exact
+> suspect kernels + source locations, two concrete paths to a reproducer, and
+> the key data from imazen/zenmetrics#20.
 
 A compute shader that is **correct on Vulkan and CUDA** returns wrong results on
 **Apple Metal**: a scattered subset of output elements come back holding a
