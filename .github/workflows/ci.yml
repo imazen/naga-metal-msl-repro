@@ -1,0 +1,43 @@
+name: repro
+
+# The iterate loop: patch vendor/wgpu/naga (the WGSL->MSL backend), push, and
+# the `metal` job below re-runs on a real Apple-Silicon Metal device. The
+# `vulkan` job is the control — the same WGSL is correct there.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  metal:
+    name: Metal (macos-latest, Apple Silicon) — EXPECTED FAIL until naga is fixed
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: GPU info
+        run: system_profiler SPDisplaysDataType | head -40 || true
+      - name: Run repro on Metal
+        # wgpu picks Metal on macOS. Exit code 1 == the bug still reproduces.
+        run: cargo run --release --no-default-features --features wgpu
+
+  vulkan:
+    name: Vulkan (ubuntu, llvmpipe) — control, EXPECTED PASS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Vulkan (lavapipe software rasterizer)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools libvulkan1
+          vulkaninfo --summary | head -30 || true
+      - name: Run repro on Vulkan
+        # Same WGSL, correct here — proves the bug is Metal-only (naga MSL).
+        run: cargo run --release --no-default-features --features wgpu

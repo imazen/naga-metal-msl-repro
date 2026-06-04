@@ -1,0 +1,346 @@
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /home/lilith/work/zen/zenmetrics/benchmarks/heaptrack/drivers/cpu_profile/Cargo.toml
+workspace: /home/lilith/work/zen/zenmetrics/Cargo.toml
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /home/lilith/work/zen/zenmetrics/benchmarks/heaptrack/drivers/gpu_vram_profile/Cargo.toml
+workspace: /home/lilith/work/zen/zenmetrics/Cargo.toml
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.16s
+     Running `target/release/metal-diffmap-repro`
+metal-diffmap-repro (zenmetrics#20) — backend=cubecl_wgpu::runtime::WgpuRuntime, ZERO_FILL=true
+[START_KERNEL_COMPILATION]
+name: metal_diffmap_repro::diffmap_zero_kernel::DiffmapZeroKernel<
+    cubecl_wgpu::runtime::WgpuRuntime,
+>
+id: KernelId {
+    type: metal_diffmap_repro::diffmap_zero_kernel::DiffmapZeroKernel<cubecl_wgpu::runtime::WgpuRuntime>,
+    address_type: U32,
+    cube_dim: CubeDim {
+        x: 256,
+        y: 1,
+        z: 1,
+    },
+    mode: Unchecked,
+    info: DiffmapZeroKernelInfo {
+        dest: ArrayCompilationArg {
+            inplace: None,
+        },
+        n: (),
+    },
+}
+source:
+```wgsl
+@group(0)
+@binding(0)
+var<storage, read_write> buffer_0_global: array<f32>;
+
+struct info_st {
+   scalars_u32: array<u32, 2>,
+   static_meta: array<u32, 2>,
+}
+
+@group(0)
+@binding(1)
+var<storage, read> info: info_st;
+
+const WORKGROUP_SIZE_X = 256u;
+const WORKGROUP_SIZE_Y = 1u;
+const WORKGROUP_SIZE_Z = 1u;
+
+@compute
+@workgroup_size(256, 1, 1)
+fn diffmap_zero_kernel(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(num_workgroups) num_workgroups: vec3<u32>,
+) {
+let id = (u32(global_id.z) * u32(num_workgroups.x) * u32(WORKGROUP_SIZE_X) * u32(num_workgroups.y) * u32(WORKGROUP_SIZE_Y)) + (u32(global_id.y) * u32(num_workgroups.x) * u32(WORKGROUP_SIZE_X)) + u32(global_id.x);
+
+let l_0 = id >= info.scalars_u32[0];
+if l_0 {
+return;
+}
+buffer_0_global[id] = f32(0.0);
+}
+```
+[END_KERNEL_COMPILATION]
+
+| 1.316831ms | DiffmapZeroKernel | WgpuRuntime
+| 1.129858ms | DiffmapZeroKernel | WgpuRuntime
+[START_KERNEL_COMPILATION]
+name: metal_diffmap_repro::per_scale_weighted_ssim_kernel::PerScaleWeightedSsimKernel<
+    cubecl_wgpu::runtime::WgpuRuntime,
+>
+id: KernelId {
+    type: metal_diffmap_repro::per_scale_weighted_ssim_kernel::PerScaleWeightedSsimKernel<cubecl_wgpu::runtime::WgpuRuntime>,
+    address_type: U32,
+    cube_dim: CubeDim {
+        x: 256,
+        y: 1,
+        z: 1,
+    },
+    mode: Unchecked,
+    info: PerScaleWeightedSsimKernelInfo {
+        mu1_all: ArrayCompilationArg {
+            inplace: None,
+        },
+        mu2_all: ArrayCompilationArg {
+            inplace: None,
+        },
+        ssq_all: ArrayCompilationArg {
+            inplace: None,
+        },
+        s12_all: ArrayCompilationArg {
+            inplace: None,
+        },
+        out: ArrayCompilationArg {
+            inplace: None,
+        },
+        padded_w: (),
+        height: (),
+        pad_total: (),
+        w_x: (),
+        w_y: (),
+        w_b: (),
+    },
+}
+source:
+```wgsl
+@group(0)
+@binding(0)
+var<storage, read_write> buffer_0_global: array<f32>;
+
+@group(0)
+@binding(1)
+var<storage, read_write> buffer_1_global: array<f32>;
+
+@group(0)
+@binding(2)
+var<storage, read_write> buffer_2_global: array<f32>;
+
+@group(0)
+@binding(3)
+var<storage, read_write> buffer_3_global: array<f32>;
+
+@group(0)
+@binding(4)
+var<storage, read_write> buffer_4_global: array<f32>;
+
+struct info_st {
+   scalars_f32: array<f32, 4>,
+   scalars_u32: array<u32, 4>,
+   static_meta: array<u32, 10>,
+}
+
+@group(0)
+@binding(5)
+var<storage, read> info: info_st;
+
+const WORKGROUP_SIZE_X = 256u;
+const WORKGROUP_SIZE_Y = 1u;
+const WORKGROUP_SIZE_Z = 1u;
+
+@compute
+@workgroup_size(256, 1, 1)
+fn per_scale_weighted_ssim_kernel(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(num_workgroups) num_workgroups: vec3<u32>,
+) {
+let id = (u32(global_id.z) * u32(num_workgroups.x) * u32(WORKGROUP_SIZE_X) * u32(num_workgroups.y) * u32(WORKGROUP_SIZE_Y)) + (u32(global_id.y) * u32(num_workgroups.x) * u32(WORKGROUP_SIZE_X)) + u32(global_id.x);
+
+var l_mut_21: f32;
+var l_mut_45: f32;
+var l_mut_73: f32;
+let l_0 = info.scalars_u32[0] * info.scalars_u32[1];
+let l_1 = id >= l_0;
+if l_1 {
+return;
+}
+let l_2 = buffer_0_global[id];
+let l_3 = buffer_1_global[id];
+let l_4 = buffer_2_global[id];
+let l_5 = buffer_3_global[id];
+let l_6 = l_2 - l_3;
+let l_7 = -l_6;
+let l_8 = fma(l_6, l_7, f32(1.0));
+let l_9 = -l_2;
+let l_10 = fma(l_9, l_3, l_5);
+let l_11 = fma(f32(2.0), l_10, f32(0.0008999999845400453));
+let l_12 = -l_2;
+let l_13 = fma(l_12, l_2, l_4);
+let l_14 = -l_3;
+let l_15 = fma(l_14, l_3, l_13);
+let l_16 = l_15 + f32(0.0008999999845400453);
+let l_17 = l_8 * l_11;
+let l_18 = l_17 / l_16;
+let l_19 = f32(1.0) - l_18;
+let l_20 = l_19 > f32(0.0);
+if l_20 {
+l_mut_21 = l_19;
+} else {
+l_mut_21 = f32(0.0);
+}
+let l_22 = id + info.scalars_u32[2];
+let l_23 = buffer_0_global[l_22];
+let l_24 = id + info.scalars_u32[2];
+let l_25 = buffer_1_global[l_24];
+let l_26 = id + info.scalars_u32[2];
+let l_27 = buffer_2_global[l_26];
+let l_28 = id + info.scalars_u32[2];
+let l_29 = buffer_3_global[l_28];
+let l_30 = l_23 - l_25;
+let l_31 = -l_30;
+let l_32 = fma(l_30, l_31, f32(1.0));
+let l_33 = -l_23;
+let l_34 = fma(l_33, l_25, l_29);
+let l_35 = fma(f32(2.0), l_34, f32(0.0008999999845400453));
+let l_36 = -l_23;
+let l_37 = fma(l_36, l_23, l_27);
+let l_38 = -l_25;
+let l_39 = fma(l_38, l_25, l_37);
+let l_40 = l_39 + f32(0.0008999999845400453);
+let l_41 = l_32 * l_35;
+let l_42 = l_41 / l_40;
+let l_43 = f32(1.0) - l_42;
+let l_44 = l_43 > f32(0.0);
+if l_44 {
+l_mut_45 = l_43;
+} else {
+l_mut_45 = f32(0.0);
+}
+let l_46 = info.scalars_u32[2] * u32(2);
+let l_47 = id + l_46;
+let l_48 = buffer_0_global[l_47];
+let l_49 = info.scalars_u32[2] * u32(2);
+let l_50 = id + l_49;
+let l_51 = buffer_1_global[l_50];
+let l_52 = info.scalars_u32[2] * u32(2);
+let l_53 = id + l_52;
+let l_54 = buffer_2_global[l_53];
+let l_55 = info.scalars_u32[2] * u32(2);
+let l_56 = id + l_55;
+let l_57 = buffer_3_global[l_56];
+let l_58 = l_48 - l_51;
+let l_59 = -l_58;
+let l_60 = fma(l_58, l_59, f32(1.0));
+let l_61 = -l_48;
+let l_62 = fma(l_61, l_51, l_57);
+let l_63 = fma(f32(2.0), l_62, f32(0.0008999999845400453));
+let l_64 = -l_48;
+let l_65 = fma(l_64, l_48, l_54);
+let l_66 = -l_51;
+let l_67 = fma(l_66, l_51, l_65);
+let l_68 = l_67 + f32(0.0008999999845400453);
+let l_69 = l_60 * l_63;
+let l_70 = l_69 / l_68;
+let l_71 = f32(1.0) - l_70;
+let l_72 = l_71 > f32(0.0);
+if l_72 {
+l_mut_73 = l_71;
+} else {
+l_mut_73 = f32(0.0);
+}
+let l_74 = info.scalars_f32[0] * l_mut_21;
+let l_75 = info.scalars_f32[1] * l_mut_45;
+let l_76 = l_74 + l_75;
+let l_77 = info.scalars_f32[2] * l_mut_73;
+let l_78 = l_76 + l_77;
+buffer_4_global[id] = l_78;
+}
+```
+[END_KERNEL_COMPILATION]
+
+| 1.125441ms | PerScaleWeightedSsimKernel | WgpuRuntime
+[START_KERNEL_COMPILATION]
+name: metal_diffmap_repro::pow2x_upsample_add_kernel::Pow2xUpsampleAddKernel<
+    cubecl_wgpu::runtime::WgpuRuntime,
+>
+id: KernelId {
+    type: metal_diffmap_repro::pow2x_upsample_add_kernel::Pow2xUpsampleAddKernel<cubecl_wgpu::runtime::WgpuRuntime>,
+    address_type: U32,
+    cube_dim: CubeDim {
+        x: 256,
+        y: 1,
+        z: 1,
+    },
+    mode: Unchecked,
+    info: Pow2xUpsampleAddKernelInfo {
+        src: ArrayCompilationArg {
+            inplace: None,
+        },
+        dst: ArrayCompilationArg {
+            inplace: None,
+        },
+        src_w: (),
+        src_h: (),
+        dst_w: (),
+        dst_h: (),
+        log2_factor: (),
+        blend_weight: (),
+    },
+}
+source:
+```wgsl
+@group(0)
+@binding(0)
+var<storage, read_write> buffer_0_global: array<f32>;
+
+@group(0)
+@binding(1)
+var<storage, read_write> buffer_1_global: array<f32>;
+
+struct info_st {
+   scalars_f32: array<f32, 2>,
+   scalars_u32: array<u32, 6>,
+   static_meta: array<u32, 4>,
+}
+
+@group(0)
+@binding(2)
+var<storage, read> info: info_st;
+
+const WORKGROUP_SIZE_X = 256u;
+const WORKGROUP_SIZE_Y = 1u;
+const WORKGROUP_SIZE_Z = 1u;
+
+@compute
+@workgroup_size(256, 1, 1)
+fn pow2x_upsample_add_kernel(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(num_workgroups) num_workgroups: vec3<u32>,
+) {
+let id = (u32(global_id.z) * u32(num_workgroups.x) * u32(WORKGROUP_SIZE_X) * u32(num_workgroups.y) * u32(WORKGROUP_SIZE_Y)) + (u32(global_id.y) * u32(num_workgroups.x) * u32(WORKGROUP_SIZE_X)) + u32(global_id.x);
+
+var l_mut_9: u32;
+var l_mut_11: u32;
+let l_0 = info.scalars_u32[2] * info.scalars_u32[3];
+let l_1 = id >= l_0;
+if l_1 {
+return;
+}
+let l_2 = id % info.scalars_u32[2];
+let l_3 = id / info.scalars_u32[2];
+let l_4 = l_2 >> info.scalars_u32[4];
+let l_5 = l_3 >> info.scalars_u32[4];
+let l_6 = info.scalars_u32[0] - u32(1);
+let l_7 = info.scalars_u32[1] - u32(1);
+let l_8 = l_4 < l_6;
+if l_8 {
+l_mut_9 = l_4;
+} else {
+l_mut_9 = l_6;
+}
+let l_10 = l_5 < l_7;
+if l_10 {
+l_mut_11 = l_5;
+} else {
+l_mut_11 = l_7;
+}
+let l_12 = l_mut_11 * info.scalars_u32[0];
+let l_13 = l_12 + l_mut_9;
+let l_14 = buffer_0_global[l_13];
+let l_15 = buffer_1_global[id];
+let l_16 = info.scalars_f32[0] * l_14;
+let l_17 = l_15 + l_16;
+buffer_1_global[id] = l_17;
+}
+```
+[END_KERNEL_COMPILATION]

@@ -1,0 +1,4 @@
+[submodule "vendor/wgpu"]
+	path = vendor/wgpu
+	url = https://github.com/imazen/wgpu.git
+	branch = naga-metal-msl-repro
