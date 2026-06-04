@@ -163,6 +163,69 @@ fn pow2x_upsample_add_kernel(
     dst[idx] = dst[idx] + blend_weight * v;
 }
 
+// ───────────────────── GPU producer kernels (the new variable) ─────────────────────
+// The isolated host-uploaded chain PASSES on Metal. The real pipeline GPU-PRODUCES
+// the mu1/mu2/ssq/s12 planes (via a 3D channel-as-z dispatch) before `per_scale`
+// reads them cross-channel (idx, idx+pt, idx+pt*2). These relay kernels reproduce
+// "the persist planes are written by a prior dispatch" without porting the whole
+// feature kernel: they copy host-staged synth values into the planes on-device.
+// The values are byte-identical to the host-upload path, so the CPU reference is
+// unchanged — only HOW the planes get filled differs (host blit vs GPU dispatch).
+
+/// 1D relay: flat copy tmp -> plane over the whole concatenated [ch0|ch1|ch2] buffer.
+#[cube(launch_unchecked)]
+#[allow(clippy::too_many_arguments)]
+fn relay_planes_1d_kernel(
+    tmp1: &Array<f32>,
+    tmp2: &Array<f32>,
+    tmp3: &Array<f32>,
+    tmp4: &Array<f32>,
+    p1: &mut Array<f32>,
+    p2: &mut Array<f32>,
+    p3: &mut Array<f32>,
+    p4: &mut Array<f32>,
+    n: u32, // plane_len = pad_total * 3
+) {
+    let idx = ABSOLUTE_POS;
+    if idx >= n as usize {
+        terminate!();
+    }
+    p1[idx] = tmp1[idx];
+    p2[idx] = tmp2[idx];
+    p3[idx] = tmp3[idx];
+    p4[idx] = tmp4[idx];
+}
+
+/// 3D relay: dispatched (cube_x, 1, 3) with channel = CUBE_POS_Z, exactly like
+/// `fused_features_kernel_persist`'s grid shape — each channel's plane region
+/// [channel*pt, channel*pt + pt) is written by a *different* threadgroup-z, then
+/// `per_scale` reads all three regions from one thread. This is the producer→
+/// consumer storage pattern the real pipeline exercises and this repro did not.
+#[cube(launch_unchecked)]
+#[allow(clippy::too_many_arguments)]
+fn relay_planes_3d_kernel(
+    tmp1: &Array<f32>,
+    tmp2: &Array<f32>,
+    tmp3: &Array<f32>,
+    tmp4: &Array<f32>,
+    p1: &mut Array<f32>,
+    p2: &mut Array<f32>,
+    p3: &mut Array<f32>,
+    p4: &mut Array<f32>,
+    pad_total: u32,
+) {
+    let channel = CUBE_POS_Z;
+    let pixel = CUBE_POS_X * CUBE_DIM_X + UNIT_POS_X;
+    if pixel >= pad_total {
+        terminate!();
+    }
+    let off = (channel as usize) * (pad_total as usize) + pixel as usize;
+    p1[off] = tmp1[off];
+    p2[off] = tmp2[off];
+    p3[off] = tmp3[off];
+    p4[off] = tmp4[off];
+}
+
 // ───────────────────────── CPU reference (plain Rust) ─────────────────────────
 
 fn per_pixel_ssim_error(mu1: f32, mu2: f32, ssq: f32, s12: f32) -> f32 {
@@ -222,6 +285,29 @@ fn cpu_upsample_add(
 
 const N_SCALES: usize = 4;
 
+/// How the mu1/mu2/ssq/s12 planes that `per_scale` reads get filled.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Producer {
+    /// Host blit (`create_from_slice`) — the original chain. CI-confirmed PASS on Metal.
+    Host,
+    /// On-device 1D flat relay copy from host-staged temps into the planes.
+    Relay1d,
+    /// On-device 3D (channel-as-z) relay — mirrors the feature kernel's grid shape.
+    Relay3d,
+}
+
+impl Producer {
+    fn label(self) -> &'static str {
+        match self {
+            Producer::Host => "host-upload",
+            Producer::Relay1d => "gpu-relay-1d",
+            Producer::Relay3d => "gpu-relay-3d(ch=z)",
+        }
+    }
+}
+
+const RELAY_TX: u32 = 256;
+
 /// Round up to a multiple of 16 (mirrors zensim_gpu::simd_padded_width for the
 /// sizes used here; both 64 and 96 are already multiples of 16).
 fn simd_padded_width(w: usize) -> usize {
@@ -241,7 +327,13 @@ fn synth(scale: usize, plane: usize, idx: usize, pt: usize) -> f32 {
     base + 0.01 * (i * 0.013 + plane as f32).sin()
 }
 
-fn run<R: Runtime>(label: &str, width: usize, height: usize, zero_fill: bool) -> bool {
+fn run<R: Runtime>(
+    label: &str,
+    width: usize,
+    height: usize,
+    zero_fill: bool,
+    producer: Producer,
+) -> bool {
     let client = R::client(&Default::default());
 
     // Build the pyramid plan (padded_w halves via /2; logical w via div_ceil;
@@ -290,10 +382,65 @@ fn run<R: Runtime>(label: &str, width: usize, height: usize, zero_fill: bool) ->
         let ssq = mk(2);
         let s12 = mk(3);
 
-        let mu1_h = client.create_from_slice(f32::as_bytes(&mu1));
-        let mu2_h = client.create_from_slice(f32::as_bytes(&mu2));
-        let ssq_h = client.create_from_slice(f32::as_bytes(&ssq));
-        let s12_h = client.create_from_slice(f32::as_bytes(&s12));
+        // The four planes `per_scale` will read. For `Host` they ARE the
+        // host-blitted buffers. For relay modes they are empty device buffers
+        // that a prior GPU dispatch fills from host-staged temps — so the read
+        // in `per_scale` is a genuine producer→consumer storage read-after-write.
+        let (mu1_h, mu2_h, ssq_h, s12_h) = match producer {
+            Producer::Host => (
+                client.create_from_slice(f32::as_bytes(&mu1)),
+                client.create_from_slice(f32::as_bytes(&mu2)),
+                client.create_from_slice(f32::as_bytes(&ssq)),
+                client.create_from_slice(f32::as_bytes(&s12)),
+            ),
+            Producer::Relay1d | Producer::Relay3d => {
+                let t1 = client.create_from_slice(f32::as_bytes(&mu1));
+                let t2 = client.create_from_slice(f32::as_bytes(&mu2));
+                let t3 = client.create_from_slice(f32::as_bytes(&ssq));
+                let t4 = client.create_from_slice(f32::as_bytes(&s12));
+                let p1 = client.empty(plane_len * core::mem::size_of::<f32>());
+                let p2 = client.empty(plane_len * core::mem::size_of::<f32>());
+                let p3 = client.empty(plane_len * core::mem::size_of::<f32>());
+                let p4 = client.empty(plane_len * core::mem::size_of::<f32>());
+                if producer == Producer::Relay1d {
+                    unsafe {
+                        relay_planes_1d_kernel::launch_unchecked::<R>(
+                            &client,
+                            cube_count(plane_len),
+                            CubeDim::new_1d(256),
+                            ArrayArg::from_raw_parts(t1.clone(), plane_len),
+                            ArrayArg::from_raw_parts(t2.clone(), plane_len),
+                            ArrayArg::from_raw_parts(t3.clone(), plane_len),
+                            ArrayArg::from_raw_parts(t4.clone(), plane_len),
+                            ArrayArg::from_raw_parts(p1.clone(), plane_len),
+                            ArrayArg::from_raw_parts(p2.clone(), plane_len),
+                            ArrayArg::from_raw_parts(p3.clone(), plane_len),
+                            ArrayArg::from_raw_parts(p4.clone(), plane_len),
+                            plane_len as u32,
+                        );
+                    }
+                } else {
+                    let cube_x = (pt as u32).div_ceil(RELAY_TX).max(1);
+                    unsafe {
+                        relay_planes_3d_kernel::launch_unchecked::<R>(
+                            &client,
+                            CubeCount::Static(cube_x, 1, 3),
+                            CubeDim::new_3d(RELAY_TX, 1, 1),
+                            ArrayArg::from_raw_parts(t1.clone(), plane_len),
+                            ArrayArg::from_raw_parts(t2.clone(), plane_len),
+                            ArrayArg::from_raw_parts(t3.clone(), plane_len),
+                            ArrayArg::from_raw_parts(t4.clone(), plane_len),
+                            ArrayArg::from_raw_parts(p1.clone(), plane_len),
+                            ArrayArg::from_raw_parts(p2.clone(), plane_len),
+                            ArrayArg::from_raw_parts(p3.clone(), plane_len),
+                            ArrayArg::from_raw_parts(p4.clone(), plane_len),
+                            pt as u32,
+                        );
+                    }
+                }
+                (p1, p2, p3, p4)
+            }
+        };
 
         let scale_dm = client.empty(pt * core::mem::size_of::<f32>());
 
@@ -371,8 +518,9 @@ fn run<R: Runtime>(label: &str, width: usize, height: usize, zero_fill: bool) ->
     }
     let pass = max_err <= 1e-3;
     println!(
-        "  {label} ({width}x{height}, base_pw={base_pw}): max_err = {max_err:.6} \
+        "  [{:>18}] {label} ({width}x{height}, base_pw={base_pw}): max_err = {max_err:.6} \
          ({n_div}/{base_n} px > 1e-3); argmax (x={}, y={}) gpu={} cpu={}  -> {}",
+        producer.label(),
         argmax % base_pw,
         argmax / base_pw,
         gpu[argmax],
@@ -417,8 +565,14 @@ fn main() {
     );
     let mut all_pass = true;
     // 64x64 is the control (immune in the real pipeline); 96x80, 128x128 fail on Metal.
-    for &(w, h) in &[(64usize, 64usize), (96, 80), (128, 128)] {
-        all_pass &= run::<Backend>(&format!("{w}x{h}"), w, h, zero_fill);
+    // For each size we try every producer: host-upload (CI-confirmed PASS) plus the
+    // on-device relays that exercise the producer→consumer storage read-after-write.
+    let producers = [Producer::Host, Producer::Relay1d, Producer::Relay3d];
+    for producer in producers {
+        println!("── producer = {} ──", producer.label());
+        for &(w, h) in &[(64usize, 64usize), (96, 80), (128, 128)] {
+            all_pass &= run::<Backend>(&format!("{w}x{h}"), w, h, zero_fill, producer);
+        }
     }
     if all_pass {
         println!("ALL PASS (backend matches the CPU reference)");
