@@ -48,6 +48,17 @@
 
 use cubecl::prelude::*;
 
+// ───────────── feature-kernel constants (verbatim from zensim-gpu fused.rs) ─────────────
+// TX=64 (2 warps/block); R=5 / DIAM=11 is the 11-tap separable blur radius/diameter.
+const TX: u32 = 64;
+const R: u32 = 5;
+const DIAM: u32 = 11;
+const TILE_COLS: u32 = TX + 2u32 * R;
+const TILE_COLS_US: usize = (TX + 2u32 * R) as usize;
+const BUF_LEN_US: usize = (DIAM * TX) as usize;
+const C2: f32 = 0.0009;
+const INV_DIAM: f32 = 1.0 / 11.0;
+
 // ───────────────────────── kernels (verbatim from ─────────────────────────
 // zensim-gpu/src/kernels/diffmap.rs — keep byte-identical so the repro
 // exercises the same code the metric ships).
@@ -226,6 +237,346 @@ fn relay_planes_3d_kernel(
     p4[off] = tmp4[off];
 }
 
+// ───────────── the real producer (verbatim from zensim-gpu fused.rs:489) ─────────────
+// Tile-fused H-blur + V-blur + per-pixel features, writing the mu1/mu2/ssq/s12
+// persist planes that `per_scale` later consumes. Grid: (ceil(w/TX), n_strips, 3),
+// channel = CUBE_POS_Z. Kept byte-identical to the shipping kernel so the repro
+// exercises the same MSL the metric ships.
+#[cube(launch_unchecked)]
+#[allow(clippy::too_many_arguments)]
+fn fused_features_kernel_persist(
+    src_a: &Array<f32>,
+    dst_a: &Array<f32>,
+    src_b: &Array<f32>,
+    dst_b: &Array<f32>,
+    src_c: &Array<f32>,
+    dst_c: &Array<f32>,
+    partials_f64: &mut Array<f64>,
+    partials_max: &mut Array<f32>,
+    mu1_all: &mut Array<f32>,
+    mu2_all: &mut Array<f32>,
+    ssq_all: &mut Array<f32>,
+    s12_all: &mut Array<f32>,
+    width: u32, // padded_w
+    height: u32,
+    n_strips: u32,
+    slot_off_f64: u32,
+    slot_off_max: u32,
+    pad_total: u32,
+    y_body_start: u32,
+    y_body_end: u32,
+) {
+    let tx = UNIT_POS_X;
+    let col_block = CUBE_POS_X;
+    let strip = CUBE_POS_Y;
+    let channel = CUBE_POS_Z;
+    let col_base = col_block * TX;
+    let col = col_base + tx;
+    let in_bounds = col < width;
+
+    let w = width as usize;
+    let n_strips_us = n_strips as usize;
+    let pw = width as usize;
+    let pt = pad_total as usize;
+    let ch_base = (channel as usize) * pt;
+    let period_x = 2u32 * (width - 1u32);
+    let period_y = 2u32 * (height - 1u32);
+
+    let strip_h_base = height / n_strips;
+    let strip_rem = height - strip_h_base * n_strips;
+    let y_start = strip * strip_h_base + u32::min(strip, strip_rem);
+    let y_end_unclamp = y_start + strip_h_base + (if strip < strip_rem { 1u32 } else { 0u32 });
+    let y_end = u32::min(y_end_unclamp, height);
+
+    let mut src_row = SharedMemory::<f32>::new(TILE_COLS_US);
+    let mut dst_row = SharedMemory::<f32>::new(TILE_COLS_US);
+    let mut buf_mu1 = SharedMemory::<f32>::new(BUF_LEN_US);
+    let mut buf_mu2 = SharedMemory::<f32>::new(BUF_LEN_US);
+    let mut buf_sq = SharedMemory::<f32>::new(BUF_LEN_US);
+    let mut buf_s12 = SharedMemory::<f32>::new(BUF_LEN_US);
+
+    let mut sum_m1 = 0.0_f32;
+    let mut sum_m2 = 0.0_f32;
+    let mut sum_sq = 0.0_f32;
+    let mut sum_s12 = 0.0_f32;
+
+    let mut a0 = 0.0_f64;
+    let mut a1 = 0.0_f64;
+    let mut a2 = 0.0_f64;
+    let mut a3 = 0.0_f64;
+    let mut a4 = 0.0_f64;
+    let mut a5 = 0.0_f64;
+    let mut a6 = 0.0_f64;
+    let mut a7 = 0.0_f64;
+    let mut a8 = 0.0_f64;
+    let mut a9 = 0.0_f64;
+    let mut a10 = 0.0_f64;
+    let mut a11 = 0.0_f64;
+    let mut a12 = 0.0_f64;
+    let mut a13 = 0.0_f64;
+    let mut a14 = 0.0_f64;
+    let mut a15 = 0.0_f64;
+    let mut a16 = 0.0_f64;
+    let mut peak0 = 0.0_f32;
+    let mut peak1 = 0.0_f32;
+    let mut peak2 = 0.0_f32;
+
+    // ============================ PREFIX INIT ============================
+    let mut k: u32 = 0u32;
+    while k < DIAM {
+        let raw_y = (y_start + k + period_y - R) % period_y;
+        let y_in = if raw_y < height { raw_y } else { period_y - raw_y };
+
+        sync_cube();
+        let mut i: u32 = 0u32;
+        while i * TX + tx < TILE_COLS {
+            let load_x = i * TX + tx;
+            let raw_x = (col_base + load_x + period_x - R) % period_x;
+            let gx = if raw_x < width { raw_x } else { period_x - raw_x };
+            let off = (y_in as usize) * w + (gx as usize);
+            let s_val = if channel == 0u32 {
+                src_a[off]
+            } else if channel == 1u32 {
+                src_b[off]
+            } else {
+                src_c[off]
+            };
+            let d_val = if channel == 0u32 {
+                dst_a[off]
+            } else if channel == 1u32 {
+                dst_b[off]
+            } else {
+                dst_c[off]
+            };
+            src_row[load_x as usize] = s_val;
+            dst_row[load_x as usize] = d_val;
+            i += 1u32;
+        }
+        sync_cube();
+
+        let mut m1 = 0.0_f32;
+        let mut m2 = 0.0_f32;
+        let mut sq = 0.0_f32;
+        let mut s12 = 0.0_f32;
+        let mut j: u32 = 0u32;
+        while j < DIAM {
+            let s = src_row[(tx + j) as usize];
+            let d = dst_row[(tx + j) as usize];
+            m1 += s;
+            m2 += d;
+            sq = fma(s, s, fma(d, d, sq));
+            s12 = fma(s, d, s12);
+            j += 1u32;
+        }
+        m1 *= INV_DIAM;
+        m2 *= INV_DIAM;
+        sq *= INV_DIAM;
+        s12 *= INV_DIAM;
+
+        let buf_idx = (k * TX + tx) as usize;
+        buf_mu1[buf_idx] = m1;
+        buf_mu2[buf_idx] = m2;
+        buf_sq[buf_idx] = sq;
+        buf_s12[buf_idx] = s12;
+
+        sum_m1 += m1;
+        sum_m2 += m2;
+        sum_sq += sq;
+        sum_s12 += s12;
+
+        k += 1u32;
+    }
+
+    // ============================ WALK Y ============================
+    let mut slot: u32 = 0u32;
+    let mut y: u32 = y_start;
+    while y < y_end {
+        let mu1 = sum_m1 * INV_DIAM;
+        let mu2 = sum_m2 * INV_DIAM;
+        let ssq = sum_sq * INV_DIAM;
+        let s12_v = sum_s12 * INV_DIAM;
+
+        let off = (y as usize) * w + (col as usize);
+        if in_bounds {
+            mu1_all[ch_base + off] = mu1;
+            mu2_all[ch_base + off] = mu2;
+            ssq_all[ch_base + off] = ssq;
+            s12_all[ch_base + off] = s12_v;
+        }
+
+        let mut sv: f32 = 0.0;
+        let mut dv: f32 = 0.0;
+        if in_bounds {
+            if channel == 0u32 {
+                sv = src_a[off];
+                dv = dst_a[off];
+            } else {
+                if channel == 1u32 {
+                    sv = src_b[off];
+                    dv = dst_b[off];
+                } else {
+                    sv = src_c[off];
+                    dv = dst_c[off];
+                }
+            }
+        }
+
+        let mu_diff = mu1 - mu2;
+        let num_m = fma(mu_diff, -mu_diff, 1.0);
+        let inner_ns = fma(-mu1, mu2, s12_v);
+        let num_s = fma(2.0, inner_ns, C2);
+        let inner_ds_inner = fma(-mu1, mu1, ssq);
+        let denom_s = fma(-mu2, mu2, inner_ds_inner) + C2;
+        let sd_raw = 1.0 - (num_m * num_s) / denom_s;
+        let sd0 = if sd_raw > 0.0 { sd_raw } else { f32::new(0.0) };
+        let is_body = y >= y_body_start && y < y_body_end;
+        let mask = if is_body { f32::new(1.0) } else { f32::new(0.0) };
+        let sd = sd0 * mask;
+        let sd2 = sd * sd;
+        let sd4 = sd2 * sd2;
+        a0 += sd as f64;
+        a1 += sd4 as f64;
+        a2 += sd2 as f64;
+        a14 += (sd4 * sd4) as f64;
+        if sd > peak0 {
+            peak0 = sd;
+        }
+
+        let diff1 = f32::abs(sv - mu1);
+        let diff2 = f32::abs(dv - mu2);
+        let ed = (1.0 + diff2) / (1.0 + diff1) - 1.0;
+        let artifact0 = if ed > 0.0 { ed } else { f32::new(0.0) };
+        let detail_lost0 = if ed < 0.0 { -ed } else { f32::new(0.0) };
+        let artifact = artifact0 * mask;
+        let detail_lost = detail_lost0 * mask;
+        let a2_v = artifact * artifact;
+        let dl2 = detail_lost * detail_lost;
+        let a4_v = a2_v * a2_v;
+        let dl4 = dl2 * dl2;
+        a3 += artifact as f64;
+        a4 += a4_v as f64;
+        a5 += a2_v as f64;
+        a6 += detail_lost as f64;
+        a7 += dl4 as f64;
+        a8 += dl2 as f64;
+        a15 += (a4_v * a4_v) as f64;
+        a16 += (dl4 * dl4) as f64;
+        if artifact > peak1 {
+            peak1 = artifact;
+        }
+        if detail_lost > peak2 {
+            peak2 = detail_lost;
+        }
+
+        let vs = (sv - mu1) * mask;
+        let vd = (dv - mu2) * mask;
+        a10 += (vs * vs) as f64;
+        a11 += (vd * vd) as f64;
+        a12 += (diff1 * mask) as f64;
+        a13 += (diff2 * mask) as f64;
+
+        let pd = (sv - dv) * mask;
+        a9 += (pd * pd) as f64;
+
+        // Slide
+        let buf_idx = (slot * TX + tx) as usize;
+        let old_m1 = buf_mu1[buf_idx];
+        let old_m2 = buf_mu2[buf_idx];
+        let old_sq = buf_sq[buf_idx];
+        let old_s12 = buf_s12[buf_idx];
+
+        let raw_y = (y + R + 1u32 + period_y) % period_y;
+        let y_in = if raw_y < height { raw_y } else { period_y - raw_y };
+
+        sync_cube();
+        let mut i: u32 = 0u32;
+        while i * TX + tx < TILE_COLS {
+            let load_x = i * TX + tx;
+            let raw_x = (col_base + load_x + period_x - R) % period_x;
+            let gx = if raw_x < width { raw_x } else { period_x - raw_x };
+            let off2 = (y_in as usize) * w + (gx as usize);
+            let s_val = if channel == 0u32 {
+                src_a[off2]
+            } else if channel == 1u32 {
+                src_b[off2]
+            } else {
+                src_c[off2]
+            };
+            let d_val = if channel == 0u32 {
+                dst_a[off2]
+            } else if channel == 1u32 {
+                dst_b[off2]
+            } else {
+                dst_c[off2]
+            };
+            src_row[load_x as usize] = s_val;
+            dst_row[load_x as usize] = d_val;
+            i += 1u32;
+        }
+        sync_cube();
+
+        let mut nm1 = 0.0_f32;
+        let mut nm2 = 0.0_f32;
+        let mut nsq = 0.0_f32;
+        let mut ns12 = 0.0_f32;
+        let mut j: u32 = 0u32;
+        while j < DIAM {
+            let s = src_row[(tx + j) as usize];
+            let d = dst_row[(tx + j) as usize];
+            nm1 += s;
+            nm2 += d;
+            nsq = fma(s, s, fma(d, d, nsq));
+            ns12 = fma(s, d, ns12);
+            j += 1u32;
+        }
+        nm1 *= INV_DIAM;
+        nm2 *= INV_DIAM;
+        nsq *= INV_DIAM;
+        ns12 *= INV_DIAM;
+
+        sum_m1 = sum_m1 + nm1 - old_m1;
+        sum_m2 = sum_m2 + nm2 - old_m2;
+        sum_sq = sum_sq + nsq - old_sq;
+        sum_s12 = sum_s12 + ns12 - old_s12;
+
+        buf_mu1[buf_idx] = nm1;
+        buf_mu2[buf_idx] = nm2;
+        buf_sq[buf_idx] = nsq;
+        buf_s12[buf_idx] = ns12;
+
+        slot = (slot + 1u32) % DIAM;
+        y += 1u32;
+    }
+
+    if !in_bounds {
+        terminate!();
+    }
+    let slot_idx_us =
+        (channel as usize) * n_strips_us * pw + (strip as usize) * pw + (col as usize);
+    let f64_base = (slot_off_f64 as usize) + slot_idx_us * 17;
+    partials_f64[f64_base] = a0;
+    partials_f64[f64_base + 1] = a1;
+    partials_f64[f64_base + 2] = a2;
+    partials_f64[f64_base + 3] = a3;
+    partials_f64[f64_base + 4] = a4;
+    partials_f64[f64_base + 5] = a5;
+    partials_f64[f64_base + 6] = a6;
+    partials_f64[f64_base + 7] = a7;
+    partials_f64[f64_base + 8] = a8;
+    partials_f64[f64_base + 9] = a9;
+    partials_f64[f64_base + 10] = a10;
+    partials_f64[f64_base + 11] = a11;
+    partials_f64[f64_base + 12] = a12;
+    partials_f64[f64_base + 13] = a13;
+    partials_f64[f64_base + 14] = a14;
+    partials_f64[f64_base + 15] = a15;
+    partials_f64[f64_base + 16] = a16;
+    let max_base = (slot_off_max as usize) + slot_idx_us * 3;
+    partials_max[max_base] = peak0;
+    partials_max[max_base + 1] = peak1;
+    partials_max[max_base + 2] = peak2;
+}
+
 // ───────────────────────── CPU reference (plain Rust) ─────────────────────────
 
 fn per_pixel_ssim_error(mu1: f32, mu2: f32, ssq: f32, s12: f32) -> f32 {
@@ -279,6 +630,97 @@ fn cpu_upsample_add(
         let v = src[sy * src_w + sx];
         dst[idx] += blend * v;
     }
+}
+
+// ───────── CPU reference for the feature kernel's blurred SSIM moments ─────────
+// Centered 11×11 mirror box blur (reflect-101, period 2*(dim-1)) over the padded
+// buffer, matching `fused_features_kernel_persist`. Computed in f64 for accuracy;
+// compared with a 1e-3 tolerance, so fma-order differences are irrelevant.
+
+fn mirror_idx(idx: i64, dim: i64) -> usize {
+    let period = 2 * (dim - 1);
+    let mut r = idx % period;
+    if r < 0 {
+        r += period;
+    }
+    (if r < dim { r } else { period - r }) as usize
+}
+
+/// Produce the channel-concatenated [ch0|ch1|ch2] mu1/mu2/ssq/s12 planes
+/// (each `pt*3` long) from per-channel src/dst XYB planes (`pt` long each).
+fn cpu_feature_planes(
+    src: &[Vec<f32>; 3],
+    dst: &[Vec<f32>; 3],
+    pw: usize,
+    ph: usize,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
+    let pt = pw * ph;
+    let mut mu1 = vec![0.0f32; pt * 3];
+    let mut mu2 = vec![0.0f32; pt * 3];
+    let mut ssq = vec![0.0f32; pt * 3];
+    let mut s12 = vec![0.0f32; pt * 3];
+    let r = R as i64;
+    let diam = DIAM as i64;
+    let inv = 1.0f64 / (DIAM as f64 * DIAM as f64);
+    for c in 0..3 {
+        let sc = &src[c];
+        let dc = &dst[c];
+        for y in 0..ph {
+            for x in 0..pw {
+                let mut acc_m1 = 0.0f64;
+                let mut acc_m2 = 0.0f64;
+                let mut acc_sq = 0.0f64;
+                let mut acc_s12 = 0.0f64;
+                for ky in 0..diam {
+                    let sy = mirror_idx(y as i64 + ky - r, ph as i64);
+                    for kx in 0..diam {
+                        let sx = mirror_idx(x as i64 + kx - r, pw as i64);
+                        let s = sc[sy * pw + sx] as f64;
+                        let d = dc[sy * pw + sx] as f64;
+                        acc_m1 += s;
+                        acc_m2 += d;
+                        acc_sq += s * s + d * d;
+                        acc_s12 += s * d;
+                    }
+                }
+                let off = c * pt + y * pw + x;
+                mu1[off] = (acc_m1 * inv) as f32;
+                mu2[off] = (acc_m2 * inv) as f32;
+                ssq[off] = (acc_sq * inv) as f32;
+                s12[off] = (acc_s12 * inv) as f32;
+            }
+        }
+    }
+    (mu1, mu2, ssq, s12)
+}
+
+/// Mirrors `zensim_gpu::pick_n_strips`.
+fn pick_n_strips(padded_w: u32, height: u32) -> u32 {
+    if height <= 64 {
+        1
+    } else if height >= 1024 {
+        8
+    } else if padded_w >= 256 {
+        4
+    } else {
+        2
+    }
+}
+
+/// Deterministic synthetic XYB plane value (host-computed, then uploaded — the
+/// feature kernel's inputs being clean/host-uploaded is exactly what isolates a
+/// *producer* codegen bug from its upstream input kernels).
+fn synth_xyb(scale: usize, channel: usize, side: usize, x: usize, y: usize) -> f32 {
+    let fx = x as f32;
+    let fy = y as f32;
+    let base = 0.3
+        + 0.2 * ((scale * 3 + channel * 5) as f32 + fx * 0.05 + fy * 0.07).sin();
+    let dist = if side == 1 {
+        0.03 * (fx * 0.11 + fy * 0.09).cos()
+    } else {
+        0.0
+    };
+    base + dist
 }
 
 // ───────────────────────── harness ─────────────────────────
@@ -549,6 +991,233 @@ fn run<R: Runtime>(
     pass
 }
 
+/// The faithful-producer experiment: the mu1/mu2/ssq/s12 planes are produced by
+/// the REAL `fused_features_kernel_persist` (from clean host-uploaded XYB), read
+/// back and compared to a CPU blur reference, then fed through per_scale+upsample.
+/// Reports BOTH the persist-plane divergence (producer correctness) and the final
+/// acc divergence (full chain). This is the HANDOFF's decisive experiment.
+fn run_feature<R: Runtime>(label: &str, width: usize, height: usize) -> bool {
+    let client = R::client(&Default::default());
+
+    let mut padded_w = simd_padded_width(width);
+    let mut h = height;
+    let mut plan: Vec<(usize, usize)> = Vec::new();
+    for _ in 0..N_SCALES {
+        if padded_w < 8 || h < 8 {
+            break;
+        }
+        plan.push((padded_w, h));
+        padded_w /= 2;
+        h = h.div_ceil(2);
+    }
+
+    let base_pw = plan[0].0;
+    let base_n = base_pw * height;
+    let w = [1.0f32 / 3.0, 1.0 / 3.0, 1.0 / 3.0];
+    let blend = 1.0f32 / plan.len() as f32;
+
+    let acc = client.empty(base_n * core::mem::size_of::<f32>());
+    unsafe {
+        diffmap_zero_kernel::launch_unchecked::<R>(
+            &client,
+            cube_count(base_n),
+            CubeDim::new_1d(256),
+            ArrayArg::from_raw_parts(acc.clone(), base_n),
+            base_n as u32,
+        );
+    }
+    let mut acc_cpu = vec![0.0f32; base_n];
+
+    let mut worst_plane_err = 0.0f32;
+    let mut worst_plane_where = (0usize, 0usize, 0usize, 0usize); // (scale, channel, x, y)
+    let mut plane_div_total = 0usize;
+
+    for (s, &(pw, ph)) in plan.iter().enumerate() {
+        let pt = pw * ph;
+        let plane_len = pt * 3;
+        let n_strips = pick_n_strips(pw as u32, ph as u32);
+
+        // Synthetic per-channel XYB inputs (ref = side 0, dist = side 1).
+        let mk = |channel: usize, side: usize| -> Vec<f32> {
+            let mut v = vec![0.0f32; pt];
+            for y in 0..ph {
+                for x in 0..pw {
+                    v[y * pw + x] = synth_xyb(s, channel, side, x, y);
+                }
+            }
+            v
+        };
+        let src: [Vec<f32>; 3] = [mk(0, 0), mk(1, 0), mk(2, 0)];
+        let dst: [Vec<f32>; 3] = [mk(0, 1), mk(1, 1), mk(2, 1)];
+
+        let src_a = client.create_from_slice(f32::as_bytes(&src[0]));
+        let dst_a = client.create_from_slice(f32::as_bytes(&dst[0]));
+        let src_b = client.create_from_slice(f32::as_bytes(&src[1]));
+        let dst_b = client.create_from_slice(f32::as_bytes(&dst[1]));
+        let src_c = client.create_from_slice(f32::as_bytes(&src[2]));
+        let dst_c = client.create_from_slice(f32::as_bytes(&dst[2]));
+
+        // Partials buffers (kept verbatim with the kernel even though we don't read them).
+        let n_partials_f64 = pw * (n_strips as usize) * 3 * 17;
+        let n_partials_max = pw * (n_strips as usize) * 3 * 3;
+        let partials_f64 = client.empty(n_partials_f64 * core::mem::size_of::<f64>());
+        let partials_max = client.empty(n_partials_max * core::mem::size_of::<f32>());
+
+        let p_mu1 = client.empty(plane_len * core::mem::size_of::<f32>());
+        let p_mu2 = client.empty(plane_len * core::mem::size_of::<f32>());
+        let p_ssq = client.empty(plane_len * core::mem::size_of::<f32>());
+        let p_s12 = client.empty(plane_len * core::mem::size_of::<f32>());
+
+        let cube_x = (pw as u32).div_ceil(TX).max(1);
+        unsafe {
+            fused_features_kernel_persist::launch_unchecked::<R>(
+                &client,
+                CubeCount::Static(cube_x, n_strips, 3),
+                CubeDim::new_3d(TX, 1, 1),
+                ArrayArg::from_raw_parts(src_a.clone(), pt),
+                ArrayArg::from_raw_parts(dst_a.clone(), pt),
+                ArrayArg::from_raw_parts(src_b.clone(), pt),
+                ArrayArg::from_raw_parts(dst_b.clone(), pt),
+                ArrayArg::from_raw_parts(src_c.clone(), pt),
+                ArrayArg::from_raw_parts(dst_c.clone(), pt),
+                ArrayArg::from_raw_parts(partials_f64.clone(), n_partials_f64),
+                ArrayArg::from_raw_parts(partials_max.clone(), n_partials_max),
+                ArrayArg::from_raw_parts(p_mu1.clone(), plane_len),
+                ArrayArg::from_raw_parts(p_mu2.clone(), plane_len),
+                ArrayArg::from_raw_parts(p_ssq.clone(), plane_len),
+                ArrayArg::from_raw_parts(p_s12.clone(), plane_len),
+                pw as u32,
+                ph as u32,
+                n_strips,
+                0u32,
+                0u32,
+                pt as u32,
+                0u32,
+                ph as u32,
+            );
+        }
+
+        // CPU reference planes + compare to the GPU-produced planes.
+        let (cmu1, cmu2, cssq, cs12) = cpu_feature_planes(&src, &dst, pw, ph);
+        let gmu1 = f32::from_bytes(&client.read_one(p_mu1.clone()).expect("read mu1")).to_vec();
+        let gmu2 = f32::from_bytes(&client.read_one(p_mu2.clone()).expect("read mu2")).to_vec();
+        let gssq = f32::from_bytes(&client.read_one(p_ssq.clone()).expect("read ssq")).to_vec();
+        let gs12 = f32::from_bytes(&client.read_one(p_s12.clone()).expect("read s12")).to_vec();
+        for (pi, (cpu_plane, gpu_plane)) in [
+            (&cmu1, &gmu1),
+            (&cmu2, &gmu2),
+            (&cssq, &gssq),
+            (&cs12, &gs12),
+        ]
+        .iter()
+        .enumerate()
+        {
+            for off in 0..plane_len {
+                let e = (cpu_plane[off] - gpu_plane[off]).abs();
+                if e > 1e-3 {
+                    plane_div_total += 1;
+                }
+                if e > worst_plane_err {
+                    worst_plane_err = e;
+                    let ch = off / pt;
+                    let local = off % pt;
+                    worst_plane_where = (s, ch * 4 + pi, local % pw, local / pw);
+                }
+            }
+        }
+
+        // Step 2 — per_scale reads the GPU-produced planes.
+        let scale_dm = client.empty(pt * core::mem::size_of::<f32>());
+        unsafe {
+            per_scale_weighted_ssim_kernel::launch_unchecked::<R>(
+                &client,
+                cube_count(pt),
+                CubeDim::new_1d(256),
+                ArrayArg::from_raw_parts(p_mu1.clone(), plane_len),
+                ArrayArg::from_raw_parts(p_mu2.clone(), plane_len),
+                ArrayArg::from_raw_parts(p_ssq.clone(), plane_len),
+                ArrayArg::from_raw_parts(p_s12.clone(), plane_len),
+                ArrayArg::from_raw_parts(scale_dm.clone(), pt),
+                pw as u32,
+                ph as u32,
+                pt as u32,
+                w[0],
+                w[1],
+                w[2],
+            );
+        }
+        // Step 3 — upsample-add into acc.
+        unsafe {
+            pow2x_upsample_add_kernel::launch_unchecked::<R>(
+                &client,
+                cube_count(base_n),
+                CubeDim::new_1d(256),
+                ArrayArg::from_raw_parts(scale_dm.clone(), pt),
+                ArrayArg::from_raw_parts(acc.clone(), base_n),
+                pw as u32,
+                ph as u32,
+                base_pw as u32,
+                height as u32,
+                s as u32,
+                blend,
+            );
+        }
+
+        // CPU mirror of the full chain.
+        let dm_cpu = cpu_per_scale(&cmu1, &cmu2, &cssq, &cs12, pt, pt, w);
+        cpu_upsample_add(&dm_cpu, pw, &mut acc_cpu, base_pw, height, s as u32, blend);
+    }
+
+    let gpu = f32::from_bytes(&client.read_one(acc.clone()).expect("read acc")).to_vec();
+    let mut max_err = 0.0f32;
+    let mut argmax = 0usize;
+    let mut n_div = 0usize;
+    for i in 0..base_n {
+        let e = (gpu[i] - acc_cpu[i]).abs();
+        if e > 1e-3 {
+            n_div += 1;
+        }
+        if e > max_err {
+            max_err = e;
+            argmax = i;
+        }
+    }
+    let plane_pass = worst_plane_err <= 1e-3;
+    let acc_pass = max_err <= 1e-3;
+    let (ws, wp, wx, wy) = worst_plane_where;
+    println!(
+        "  [feature-producer] {label} ({width}x{height}): \
+         PLANES worst_err={worst_plane_err:.6} ({plane_div_total} slots>1e-3) \
+         @scale{ws} plane{wp} (x={wx},y={wy}) -> {}  ||  \
+         ACC max_err={max_err:.6} ({n_div}/{base_n}>1e-3) argmax(x={},y={}) gpu={} cpu={} -> {}",
+        if plane_pass { "PASS" } else { "FAIL" },
+        argmax % base_pw,
+        argmax / base_pw,
+        gpu[argmax],
+        acc_cpu[argmax],
+        if acc_pass { "PASS" } else { "FAIL" },
+    );
+    if !acc_pass {
+        let mut shown = 0;
+        for i in 0..base_n {
+            if (gpu[i] - acc_cpu[i]).abs() > 1e-3 {
+                println!(
+                    "      acc (x={}, y={}) gpu={:.6} cpu={:.6}",
+                    i % base_pw,
+                    i / base_pw,
+                    gpu[i],
+                    acc_cpu[i]
+                );
+                shown += 1;
+                if shown >= 8 {
+                    break;
+                }
+            }
+        }
+    }
+    plane_pass && acc_pass
+}
+
 #[cfg(feature = "cuda")]
 type Backend = cubecl::cuda::CudaRuntime;
 #[cfg(all(feature = "wgpu", not(feature = "cuda")))]
@@ -574,6 +1243,13 @@ fn main() {
             all_pass &= run::<Backend>(&format!("{w}x{h}"), w, h, zero_fill, producer);
         }
     }
+
+    // The faithful producer: the real feature kernel writes the persist planes.
+    println!("── producer = feature-kernel (fused_features_kernel_persist) ──");
+    for &(w, h) in &[(64usize, 64usize), (96, 80), (128, 128)] {
+        all_pass &= run_feature::<Backend>(&format!("{w}x{h}"), w, h);
+    }
+
     if all_pass {
         println!("ALL PASS (backend matches the CPU reference)");
     } else {
