@@ -358,13 +358,21 @@ fn blur_f64_kernel(
     let mut k: u32 = 0u32;
     while k < DIAM {
         let raw_y = (y_start + k + period_y - R) % period_y;
-        let y_in = if raw_y < height { raw_y } else { period_y - raw_y };
+        let y_in = if raw_y < height {
+            raw_y
+        } else {
+            period_y - raw_y
+        };
         sync_cube();
         let mut i: u32 = 0u32;
         while i * TX + tx < TILE_COLS {
             let load_x = i * TX + tx;
             let raw_x = (col_base + load_x + period_x - R) % period_x;
-            let gx = if raw_x < width { raw_x } else { period_x - raw_x };
+            let gx = if raw_x < width {
+                raw_x
+            } else {
+                period_x - raw_x
+            };
             let off = (y_in as usize) * w + (gx as usize);
             let s_val = if channel == 0u32 {
                 src_a[off]
@@ -439,13 +447,21 @@ fn blur_f64_kernel(
         let old_s12 = buf_s12[buf_idx];
 
         let raw_y = (y + R + 1u32 + period_y) % period_y;
-        let y_in = if raw_y < height { raw_y } else { period_y - raw_y };
+        let y_in = if raw_y < height {
+            raw_y
+        } else {
+            period_y - raw_y
+        };
         sync_cube();
         let mut i: u32 = 0u32;
         while i * TX + tx < TILE_COLS {
             let load_x = i * TX + tx;
             let raw_x = (col_base + load_x + period_x - R) % period_x;
-            let gx = if raw_x < width { raw_x } else { period_x - raw_x };
+            let gx = if raw_x < width {
+                raw_x
+            } else {
+                period_x - raw_x
+            };
             let off2 = (y_in as usize) * w + (gx as usize);
             let s_val = if channel == 0u32 {
                 src_a[off2]
@@ -499,7 +515,8 @@ fn blur_f64_kernel(
     if !in_bounds {
         terminate!();
     }
-    let slot_idx_us = (channel as usize) * n_strips_us * pw + (strip as usize) * pw + (col as usize);
+    let slot_idx_us =
+        (channel as usize) * n_strips_us * pw + (strip as usize) * pw + (col as usize);
     partials_f64[slot_idx_us] = a0;
 }
 
@@ -564,14 +581,22 @@ fn blur_planes_kernel(
     let mut k: u32 = 0u32;
     while k < DIAM {
         let raw_y = (y_start + k + period_y - R) % period_y;
-        let y_in = if raw_y < height { raw_y } else { period_y - raw_y };
+        let y_in = if raw_y < height {
+            raw_y
+        } else {
+            period_y - raw_y
+        };
 
         sync_cube();
         let mut i: u32 = 0u32;
         while i * TX + tx < TILE_COLS {
             let load_x = i * TX + tx;
             let raw_x = (col_base + load_x + period_x - R) % period_x;
-            let gx = if raw_x < width { raw_x } else { period_x - raw_x };
+            let gx = if raw_x < width {
+                raw_x
+            } else {
+                period_x - raw_x
+            };
             let off = (y_in as usize) * w + (gx as usize);
             let s_val = if channel == 0u32 {
                 src_a[off]
@@ -651,14 +676,22 @@ fn blur_planes_kernel(
         let old_s12 = buf_s12[buf_idx];
 
         let raw_y = (y + R + 1u32 + period_y) % period_y;
-        let y_in = if raw_y < height { raw_y } else { period_y - raw_y };
+        let y_in = if raw_y < height {
+            raw_y
+        } else {
+            period_y - raw_y
+        };
 
         sync_cube();
         let mut i: u32 = 0u32;
         while i * TX + tx < TILE_COLS {
             let load_x = i * TX + tx;
             let raw_x = (col_base + load_x + period_x - R) % period_x;
-            let gx = if raw_x < width { raw_x } else { period_x - raw_x };
+            let gx = if raw_x < width {
+                raw_x
+            } else {
+                period_x - raw_x
+            };
             let off2 = (y_in as usize) * w + (gx as usize);
             let s_val = if channel == 0u32 {
                 src_a[off2]
@@ -802,14 +835,22 @@ fn fused_features_kernel_persist(
     let mut k: u32 = 0u32;
     while k < DIAM {
         let raw_y = (y_start + k + period_y - R) % period_y;
-        let y_in = if raw_y < height { raw_y } else { period_y - raw_y };
+        let y_in = if raw_y < height {
+            raw_y
+        } else {
+            period_y - raw_y
+        };
 
         sync_cube();
         let mut i: u32 = 0u32;
         while i * TX + tx < TILE_COLS {
             let load_x = i * TX + tx;
             let raw_x = (col_base + load_x + period_x - R) % period_x;
-            let gx = if raw_x < width { raw_x } else { period_x - raw_x };
+            let gx = if raw_x < width {
+                raw_x
+            } else {
+                period_x - raw_x
+            };
             let off = (y_in as usize) * w + (gx as usize);
             let s_val = if channel == 0u32 {
                 src_a[off]
@@ -907,7 +948,11 @@ fn fused_features_kernel_persist(
         let sd_raw = 1.0 - (num_m * num_s) / denom_s;
         let sd0 = if sd_raw > 0.0 { sd_raw } else { f32::new(0.0) };
         let is_body = y >= y_body_start && y < y_body_end;
-        let mask = if is_body { f32::new(1.0) } else { f32::new(0.0) };
+        let mask = if is_body {
+            f32::new(1.0)
+        } else {
+            f32::new(0.0)
+        };
         let sd = sd0 * mask;
         let sd2 = sd * sd;
         let sd4 = sd2 * sd2;
@@ -963,14 +1008,22 @@ fn fused_features_kernel_persist(
         let old_s12 = buf_s12[buf_idx];
 
         let raw_y = (y + R + 1u32 + period_y) % period_y;
-        let y_in = if raw_y < height { raw_y } else { period_y - raw_y };
+        let y_in = if raw_y < height {
+            raw_y
+        } else {
+            period_y - raw_y
+        };
 
         sync_cube();
         let mut i: u32 = 0u32;
         while i * TX + tx < TILE_COLS {
             let load_x = i * TX + tx;
             let raw_x = (col_base + load_x + period_x - R) % period_x;
-            let gx = if raw_x < width { raw_x } else { period_x - raw_x };
+            let gx = if raw_x < width {
+                raw_x
+            } else {
+                period_x - raw_x
+            };
             let off2 = (y_in as usize) * w + (gx as usize);
             let s_val = if channel == 0u32 {
                 src_a[off2]
@@ -1190,8 +1243,7 @@ fn pick_n_strips(padded_w: u32, height: u32) -> u32 {
 fn synth_xyb(scale: usize, channel: usize, side: usize, x: usize, y: usize) -> f32 {
     let fx = x as f32;
     let fy = y as f32;
-    let base = 0.3
-        + 0.2 * ((scale * 3 + channel * 5) as f32 + fx * 0.05 + fy * 0.07).sin();
+    let base = 0.3 + 0.2 * ((scale * 3 + channel * 5) as f32 + fx * 0.05 + fy * 0.07).sin();
     let dist = if side == 1 {
         0.03 * (fx * 0.11 + fy * 0.09).cos()
     } else {
@@ -1756,10 +1808,7 @@ fn main() {
     // Init a `log` backend so cubecl-wgpu's compile-failure errors surface.
     // Default to `error` so a silent Metal shader-compile failure is visible;
     // override with RUST_LOG (e.g. `cubecl_wgpu=trace`).
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("error"),
-    )
-    .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error")).init();
     let zero_fill = std::env::var("ZERO_FILL").map(|v| v != "0").unwrap_or(true);
     println!(
         "metal-diffmap-repro (zenmetrics#20) — backend={}, ZERO_FILL={}",
@@ -1801,7 +1850,11 @@ fn main() {
             "── df64 probe: f32 recovered = {:.1} (expect ~0), df64 recovered = {:.1} (expect 4096) -> df64 {}",
             r[0],
             r[1],
-            if df64_ok { "WORKS" } else { "COLLAPSED to f32 (fast-math)" }
+            if df64_ok {
+                "WORKS"
+            } else {
+                "COLLAPSED to f32 (fast-math)"
+            }
         );
     }
 
