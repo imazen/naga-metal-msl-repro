@@ -39,6 +39,10 @@ wgpu-core = { path = "vendor/wgpu/wgpu-core" }
 wgpu-hal = { path = "vendor/wgpu/wgpu-hal" }
 wgpu-types = { path = "vendor/wgpu/wgpu-types" }
 wgpu-naga-bridge = { path = "vendor/wgpu/wgpu-naga-bridge" }
+# cubecl fork with the per-kernel fast-math control (#[cube(precise)] ->
+# KernelOptions.fast_math -> wgpu ShaderRuntimeChecks.fast_math -> Metal
+# MTLCompileOptions). git branch so CI can build it on the Metal runner.
+zenforks-cubecl = { git = "https://github.com/imazen/zenforks-cubecl", branch = "feat-per-kernel-fast-math" }
 
 [profile.release]
 debug = false

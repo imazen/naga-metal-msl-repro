@@ -32,6 +32,10 @@ jobs:
         env:
           CUBECL_DEBUG_LOG: stdout
           RUST_LOG: cubecl_wgpu=trace,wgpu=warn,wgpu_core=warn,naga=warn
+          # cubecl now STRICTLY errors on f64 for a no-SHADER_F64 device unless
+          # pre-authorized; authorize so the f64 feature kernels downgrade to f32
+          # and run (instead of aborting), letting the run reach the df64 probe.
+          CUBECL_ALLOW_F64_DOWNGRADE: "1"
         run: cargo run --release --no-default-features --features wgpu > metal_run.log 2>&1 || true
       - name: Upload Metal WGSL artifact
         if: always()
@@ -40,7 +44,10 @@ jobs:
           name: metal-wgsl
           path: metal_run.log
       - name: Run repro on Metal
-        # wgpu picks Metal on macOS. Exit code 1 == the bug still reproduces.
+        # wgpu picks Metal on macOS. The df64 per-kernel fast-math probe is the
+        # check: the `precise` kernel recovers ~4096, the non-precise one collapses.
+        env:
+          CUBECL_ALLOW_F64_DOWNGRADE: "1"
         run: cargo run --release --no-default-features --features wgpu
 
   vulkan:

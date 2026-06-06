@@ -467,8 +467,7 @@ dependencies = [
 [[package]]
 name = "cubecl-common"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc956c2dcc993f16f748d03bfdbd900f75cab4d469f4e5d8924f8ee128e861ad"
+source = "git+https://github.com/imazen/zenforks-cubecl?branch=feat-per-kernel-fast-math#7a3c9845854291ec097cc67f7c9c1b25050ae77e"
 dependencies = [
  "backtrace",
  "bytemuck",
@@ -507,8 +506,7 @@ dependencies = [
 [[package]]
 name = "cubecl-ir"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d28a897a40c8ee6c57a8b8d76d8823ba2e97f4c2b83db9338f17a0752132d486"
+source = "git+https://github.com/imazen/zenforks-cubecl?branch=feat-per-kernel-fast-math#7a3c9845854291ec097cc67f7c9c1b25050ae77e"
 dependencies = [
  "cubecl-common",
  "cubecl-macros-internal",
@@ -529,8 +527,7 @@ dependencies = [
 [[package]]
 name = "cubecl-macros"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77aa6df563e8e6a0926d2e9eeacb968737940a0e1ae9be819f6a65a341006e12"
+source = "git+https://github.com/imazen/zenforks-cubecl?branch=feat-per-kernel-fast-math#7a3c9845854291ec097cc67f7c9c1b25050ae77e"
 dependencies = [
  "cubecl-common",
  "darling 0.23.0",
@@ -546,8 +543,7 @@ dependencies = [
 [[package]]
 name = "cubecl-macros-internal"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a515651a5a91e25d87f71f311f80a088e6cf815798b9922560a97636da6b8740"
+source = "git+https://github.com/imazen/zenforks-cubecl?branch=feat-per-kernel-fast-math#7a3c9845854291ec097cc67f7c9c1b25050ae77e"
 dependencies = [
  "darling 0.23.0",
  "proc-macro2",
@@ -558,8 +554,7 @@ dependencies = [
 [[package]]
 name = "cubecl-zspace"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04054d95698afab785a4dda9f949e297831dd9e4cc6d036a93e6603f88e88b07"
+source = "git+https://github.com/imazen/zenforks-cubecl?branch=feat-per-kernel-fast-math#7a3c9845854291ec097cc67f7c9c1b25050ae77e"
 dependencies = [
  "derive-new",
  "serde",
@@ -3969,8 +3964,7 @@ dependencies = [
 [[package]]
 name = "zenforks-cubecl"
 version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b060c092d49be5675522c9e91ab1f2639cd6ff077f4348331c838443676e166"
+source = "git+https://github.com/imazen/zenforks-cubecl?branch=feat-per-kernel-fast-math#7a3c9845854291ec097cc67f7c9c1b25050ae77e"
 dependencies = [
  "cubecl-ir",
  "half",
@@ -3984,8 +3978,7 @@ dependencies = [
 [[package]]
 name = "zenforks-cubecl-core"
 version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ecbe00899d95aef9b9a4c27f870f8b4ae3014ec671da0abbfc6715a74fce04f6"
+source = "git+https://github.com/imazen/zenforks-cubecl?branch=feat-per-kernel-fast-math#7a3c9845854291ec097cc67f7c9c1b25050ae77e"
 dependencies = [
  "bitflags",
  "bytemuck",
@@ -4011,8 +4004,7 @@ dependencies = [
 [[package]]
 name = "zenforks-cubecl-cpp"
 version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a723771e40eef980f26c88d289cfeb1559e9f35817e6116226a3e9b3250f8502"
+source = "git+https://github.com/imazen/zenforks-cubecl?branch=feat-per-kernel-fast-math#7a3c9845854291ec097cc67f7c9c1b25050ae77e"
 dependencies = [
  "bytemuck",
  "cubecl-common",
@@ -4028,8 +4020,7 @@ dependencies = [
 [[package]]
 name = "zenforks-cubecl-cpu"
 version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e6c5dcdb75a6b497673fbb16e88605b8a89acf67c3b4911f5f3974910e841dc"
+source = "git+https://github.com/imazen/zenforks-cubecl?branch=feat-per-kernel-fast-math#7a3c9845854291ec097cc67f7c9c1b25050ae77e"
 dependencies = [
  "bytemuck",
  "cubecl-common",
@@ -4050,8 +4041,7 @@ dependencies = [
 [[package]]
 name = "zenforks-cubecl-cuda"
 version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3da7d18e8fb1b2474f3de6905c08ad9a490f4f2ec198565df1572bb7a18d5ad2"
+source = "git+https://github.com/imazen/zenforks-cubecl?branch=feat-per-kernel-fast-math#7a3c9845854291ec097cc67f7c9c1b25050ae77e"
 dependencies = [
  "bytemuck",
  "cubecl-common",
@@ -4068,8 +4058,7 @@ dependencies = [
 [[package]]
 name = "zenforks-cubecl-opt"
 version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98c27a7643262b9ab738be024885c4679ede47d0895c9dd8479848618739f976"
+source = "git+https://github.com/imazen/zenforks-cubecl?branch=feat-per-kernel-fast-math#7a3c9845854291ec097cc67f7c9c1b25050ae77e"
 dependencies = [
  "cubecl-common",
  "cubecl-ir",
@@ -4086,8 +4075,7 @@ dependencies = [
 [[package]]
 name = "zenforks-cubecl-runtime"
 version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a49791d30522c72566678b1cae8574cb9f97526ff7e3bc9a4a5924ac21830e4b"
+source = "git+https://github.com/imazen/zenforks-cubecl?branch=feat-per-kernel-fast-math#7a3c9845854291ec097cc67f7c9c1b25050ae77e"
 dependencies = [
  "ahash",
  "async-channel",
@@ -4116,8 +4104,7 @@ dependencies = [
 [[package]]
 name = "zenforks-cubecl-std"
 version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf68bca43a50bdde5fc329c65ec05b3069b51fe100558e95f9d7bc9656bd4d6d"
+source = "git+https://github.com/imazen/zenforks-cubecl?branch=feat-per-kernel-fast-math#7a3c9845854291ec097cc67f7c9c1b25050ae77e"
 dependencies = [
  "cubecl-common",
  "half",
@@ -4133,8 +4120,7 @@ dependencies = [
 [[package]]
 name = "zenforks-cubecl-wgpu"
 version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc672264034038fed6f57cf6df481ce6d8eb8143448b215f805776273446289e"
+source = "git+https://github.com/imazen/zenforks-cubecl?branch=feat-per-kernel-fast-math#7a3c9845854291ec097cc67f7c9c1b25050ae77e"
 dependencies = [
  "async-channel",
  "bytemuck",

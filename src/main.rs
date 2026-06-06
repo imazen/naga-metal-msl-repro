@@ -71,7 +71,11 @@ const INV_DIAM: f32 = 1.0 / 11.0;
 // base=2^24, add 1.0 x n: each add is below the f32 ulp at 2^24 (=2), so naive f32
 // loses it while df64 recovers ~n. Args are runtime so the loop can't be folded.
 // out[0] = f32 recovered (≈0), out[1] = df64 recovered (≈n if the transform survives).
-#[cube(launch_unchecked)]
+//
+// `precise` marks this kernel precision-critical: on Metal the per-kernel control
+// disables MTLCompileOptions fast-math for THIS module only, so the df64 two-sum
+// survives (recovers ~4096). Other (non-precise) kernels keep fast-math on.
+#[cube(launch_unchecked, precise)]
 fn df64_probe_kernel(out: &mut Array<f32>, base: f32, add_val: f32, n: u32) {
     let mut sf = base;
     let mut i = 0u32;
@@ -86,6 +90,35 @@ fn df64_probe_kernel(out: &mut Array<f32>, base: f32, add_val: f32, n: u32) {
     let mut j = 0u32;
     while j < n {
         // Knuth two-sum of (hi, add_val), carrying lo, then renormalize.
+        let s = hi + add_val;
+        let bb = s - hi;
+        let e = (hi - (s - bb)) + (add_val - bb);
+        let nlo = e + lo;
+        hi = s + nlo;
+        lo = nlo - (hi - s);
+        j += 1u32;
+    }
+    out[1] = (hi - base) + lo;
+}
+
+/// Identical to `df64_probe_kernel` but WITHOUT `precise` — keeps Metal's default
+/// fast-math, so its df64 two-sum collapses (recovers ~0). Side-by-side with the
+/// precise twin in one run, this proves the per-kernel control: same machine, same
+/// backend, only the `precise` attribute differs.
+#[cube(launch_unchecked)]
+fn df64_probe_fast_kernel(out: &mut Array<f32>, base: f32, add_val: f32, n: u32) {
+    let mut sf = base;
+    let mut i = 0u32;
+    while i < n {
+        sf += add_val;
+        i += 1u32;
+    }
+    out[0] = sf - base;
+
+    let mut hi = base;
+    let mut lo = f32::new(0.0);
+    let mut j = 0u32;
+    while j < n {
         let s = hi + add_val;
         let bb = s - hi;
         let e = (hi - (s - bb)) + (add_val - bb);
@@ -1827,34 +1860,59 @@ fn main() {
         }
     }
 
-    // df64 precision probe: does the double-single emulation survive on this
-    // backend, or does fast-math collapse it back to f32? base=2^24, add 1.0 x 4096.
+    // df64 precision probe — PER-KERNEL fast-math control. Two identical df64
+    // two-sum kernels, differing only by `#[cube(precise)]`. On Metal the precise
+    // one gets MTLCompileOptions fast-math OFF (recovers ~4096); the non-precise
+    // one keeps Metal's default fast-math ON (collapses to ~0). Same machine, same
+    // backend in one run — proves the per-kernel control. base=2^24, add 1.0 x4096.
     {
         let client = Backend::client(&Default::default());
-        let out = client.empty(2 * core::mem::size_of::<f32>());
-        unsafe {
-            df64_probe_kernel::launch_unchecked::<Backend>(
-                &client,
-                CubeCount::Static(1, 1, 1),
-                CubeDim::new_1d(1),
-                ArrayArg::from_raw_parts(out.clone(), 2),
-                16777216.0f32, // 2^24
-                1.0f32,
-                4096u32,
-            );
-        }
-        let bytes = client.read_one(out.clone()).expect("read df64 probe");
-        let r = f32::from_bytes(&bytes);
-        let df64_ok = (r[1] - 4096.0).abs() < 1.0;
-        println!(
-            "── df64 probe: f32 recovered = {:.1} (expect ~0), df64 recovered = {:.1} (expect 4096) -> df64 {}",
-            r[0],
-            r[1],
-            if df64_ok {
+        let run_probe = |precise: bool| -> [f32; 2] {
+            let out = client.empty(2 * core::mem::size_of::<f32>());
+            unsafe {
+                if precise {
+                    df64_probe_kernel::launch_unchecked::<Backend>(
+                        &client,
+                        CubeCount::Static(1, 1, 1),
+                        CubeDim::new_1d(1),
+                        ArrayArg::from_raw_parts(out.clone(), 2),
+                        16777216.0f32,
+                        1.0f32,
+                        4096u32,
+                    );
+                } else {
+                    df64_probe_fast_kernel::launch_unchecked::<Backend>(
+                        &client,
+                        CubeCount::Static(1, 1, 1),
+                        CubeDim::new_1d(1),
+                        ArrayArg::from_raw_parts(out.clone(), 2),
+                        16777216.0f32,
+                        1.0f32,
+                        4096u32,
+                    );
+                }
+            }
+            let bytes = client.read_one(out.clone()).expect("read df64 probe");
+            let r = f32::from_bytes(&bytes);
+            [r[0], r[1]]
+        };
+        let pr = run_probe(true);
+        let fa = run_probe(false);
+        let verdict = |df: f32| {
+            if (df - 4096.0).abs() < 1.0 {
                 "WORKS"
             } else {
-                "COLLAPSED to f32 (fast-math)"
+                "COLLAPSED"
             }
+        };
+        println!(
+            "── df64 per-kernel fast-math probe (expect df64 recovered ~4096):\n\
+                  precise   (#[cube(precise)], fast-math OFF on Metal): df64 = {:.1} -> {}\n\
+                  non-precise (fast-math ON):                           df64 = {:.1} -> {}",
+            pr[1],
+            verdict(pr[1]),
+            fa[1],
+            verdict(fa[1]),
         );
     }
 
