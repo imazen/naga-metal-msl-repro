@@ -23,11 +23,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: GPU info
         run: system_profiler SPDisplaysDataType | head -40 || true
-      - name: Capture Metal WGSL (what cubecl feeds naga on Metal)
-        # CUBECL_DEBUG_LOG=stdout dumps the per-kernel WGSL. On Metal cubecl may
-        # downgrade f64->f32 (naga's MSL backend has no FLOAT64), so this WGSL can
-        # differ from the Vulkan one — we need the exact text naga lowers to MSL.
-        run: CUBECL_DEBUG_LOG=stdout cargo run --release --no-default-features --features wgpu > metal_run.log 2>&1 || true
+      - name: Capture Metal WGSL + compile diagnostics
+        # CUBECL_DEBUG_LOG dumps the per-kernel WGSL; RUST_LOG surfaces cubecl-wgpu's
+        # shader-compile path/errors (e.g. an f64 module wgpu/naga rejects on Metal),
+        # which otherwise manifests only as silent uninitialized-buffer garbage.
+        env:
+          CUBECL_DEBUG_LOG: stdout
+          RUST_LOG: cubecl_wgpu=trace,wgpu=warn,wgpu_core=warn,naga=warn
+        run: cargo run --release --no-default-features --features wgpu > metal_run.log 2>&1 || true
       - name: Upload Metal WGSL artifact
         if: always()
         uses: actions/upload-artifact@v4

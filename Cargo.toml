@@ -16,6 +16,10 @@ cpu  = ["cubecl/cpu"]
 # which tracks tracel-ai/cubecl 0.10.x). cubecl-wgpu pulls wgpu 29.0.3 -> naga
 # 29.0.3 — the crate the bug lives in, overridden below to the in-repo fork.
 cubecl = { package = "zenforks-cubecl", version = "0.10.1", default-features = false, features = ["std"] }
+# Surfaces cubecl-wgpu's `log::error!("WGSL compilation failed …")` so a silent
+# shader-compile failure on Metal (e.g. an f64 module wgpu/naga rejects) is
+# visible instead of manifesting only as uninitialized-buffer garbage downstream.
+env_logger = "0.11.10"
 
 [[bin]]
 name = "naga-metal-msl-repro"

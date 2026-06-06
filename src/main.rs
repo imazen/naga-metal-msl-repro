@@ -1715,6 +1715,13 @@ type Backend = cubecl::wgpu::WgpuRuntime;
 type Backend = cubecl::cpu::CpuRuntime;
 
 fn main() {
+    // Init a `log` backend so cubecl-wgpu's compile-failure errors surface.
+    // Default to `error` so a silent Metal shader-compile failure is visible;
+    // override with RUST_LOG (e.g. `cubecl_wgpu=trace`).
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("error"),
+    )
+    .init();
     let zero_fill = std::env::var("ZERO_FILL").map(|v| v != "0").unwrap_or(true);
     println!(
         "metal-diffmap-repro (zenmetrics#20) — backend={}, ZERO_FILL={}",
