@@ -30,6 +30,15 @@ path = "src/main.rs"
 # and re-run — CI rebuilds it on a real Metal device.
 [patch.crates-io]
 naga = { path = "vendor/wgpu/naga" }
+# EXPERIMENT: the whole wgpu stack is vendored so wgpu-hal's Metal fast-math
+# disable (MTLCompileOptions.setFastMathEnabled(false)) takes effect — that lets
+# the df64 software-double-precision probe survive on Metal. All must be patched
+# together to keep wgpu-types/wgpu-core/wgpu-hal versions consistent.
+wgpu = { path = "vendor/wgpu/wgpu" }
+wgpu-core = { path = "vendor/wgpu/wgpu-core" }
+wgpu-hal = { path = "vendor/wgpu/wgpu-hal" }
+wgpu-types = { path = "vendor/wgpu/wgpu-types" }
+wgpu-naga-bridge = { path = "vendor/wgpu/wgpu-naga-bridge" }
 
 [profile.release]
 debug = false
