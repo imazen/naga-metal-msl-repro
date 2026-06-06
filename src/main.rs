@@ -237,6 +237,234 @@ fn relay_planes_3d_kernel(
     p4[off] = tmp4[off];
 }
 
+/// Which producer the feature harness launches.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FeatMode {
+    /// Full `fused_features_kernel_persist` (f64 partials + SSIM/feature math). FAILS on Metal.
+    Full,
+    /// Blur-only (no f64, no partials, no feature math). PASSES on Metal.
+    BlurOnly,
+    /// Blur-only PLUS a single f64 accumulator written to an f64 buffer. The f64 isolator.
+    BlurF64,
+}
+
+impl FeatMode {
+    fn label(self) -> &'static str {
+        match self {
+            FeatMode::Full => "feature-full",
+            FeatMode::BlurOnly => "blur-only   ",
+            FeatMode::BlurF64 => "blur+f64    ",
+        }
+    }
+}
+
+// ───── f64 isolator: blur-only + one f64 accumulator + f64 buffer write ─────
+// Identical to `blur_planes_kernel` (which PASSES on Metal) plus the MINIMUM f64:
+// an `a0: f64` accumulated each row and written to an `Array<f64>`. naga's MSL
+// backend advertises no FLOAT64 yet its writer emits `double`; if merely adding
+// this f64 makes the f32 plane writes go wrong on Metal, f64 is the trigger.
+#[cube(launch_unchecked)]
+#[allow(clippy::too_many_arguments)]
+fn blur_f64_kernel(
+    src_a: &Array<f32>,
+    dst_a: &Array<f32>,
+    src_b: &Array<f32>,
+    dst_b: &Array<f32>,
+    src_c: &Array<f32>,
+    dst_c: &Array<f32>,
+    partials_f64: &mut Array<f64>,
+    mu1_all: &mut Array<f32>,
+    mu2_all: &mut Array<f32>,
+    ssq_all: &mut Array<f32>,
+    s12_all: &mut Array<f32>,
+    width: u32,
+    height: u32,
+    n_strips: u32,
+    pad_total: u32,
+) {
+    let tx = UNIT_POS_X;
+    let col_block = CUBE_POS_X;
+    let strip = CUBE_POS_Y;
+    let channel = CUBE_POS_Z;
+    let col_base = col_block * TX;
+    let col = col_base + tx;
+    let in_bounds = col < width;
+
+    let w = width as usize;
+    let pw = width as usize;
+    let n_strips_us = n_strips as usize;
+    let pt = pad_total as usize;
+    let ch_base = (channel as usize) * pt;
+    let period_x = 2u32 * (width - 1u32);
+    let period_y = 2u32 * (height - 1u32);
+
+    let strip_h_base = height / n_strips;
+    let strip_rem = height - strip_h_base * n_strips;
+    let y_start = strip * strip_h_base + u32::min(strip, strip_rem);
+    let y_end_unclamp = y_start + strip_h_base + (if strip < strip_rem { 1u32 } else { 0u32 });
+    let y_end = u32::min(y_end_unclamp, height);
+
+    let mut src_row = SharedMemory::<f32>::new(TILE_COLS_US);
+    let mut dst_row = SharedMemory::<f32>::new(TILE_COLS_US);
+    let mut buf_mu1 = SharedMemory::<f32>::new(BUF_LEN_US);
+    let mut buf_mu2 = SharedMemory::<f32>::new(BUF_LEN_US);
+    let mut buf_sq = SharedMemory::<f32>::new(BUF_LEN_US);
+    let mut buf_s12 = SharedMemory::<f32>::new(BUF_LEN_US);
+
+    let mut sum_m1 = 0.0_f32;
+    let mut sum_m2 = 0.0_f32;
+    let mut sum_sq = 0.0_f32;
+    let mut sum_s12 = 0.0_f32;
+    let mut a0 = 0.0_f64; // the ONLY f64
+
+    let mut k: u32 = 0u32;
+    while k < DIAM {
+        let raw_y = (y_start + k + period_y - R) % period_y;
+        let y_in = if raw_y < height { raw_y } else { period_y - raw_y };
+        sync_cube();
+        let mut i: u32 = 0u32;
+        while i * TX + tx < TILE_COLS {
+            let load_x = i * TX + tx;
+            let raw_x = (col_base + load_x + period_x - R) % period_x;
+            let gx = if raw_x < width { raw_x } else { period_x - raw_x };
+            let off = (y_in as usize) * w + (gx as usize);
+            let s_val = if channel == 0u32 {
+                src_a[off]
+            } else if channel == 1u32 {
+                src_b[off]
+            } else {
+                src_c[off]
+            };
+            let d_val = if channel == 0u32 {
+                dst_a[off]
+            } else if channel == 1u32 {
+                dst_b[off]
+            } else {
+                dst_c[off]
+            };
+            src_row[load_x as usize] = s_val;
+            dst_row[load_x as usize] = d_val;
+            i += 1u32;
+        }
+        sync_cube();
+        let mut m1 = 0.0_f32;
+        let mut m2 = 0.0_f32;
+        let mut sq = 0.0_f32;
+        let mut s12 = 0.0_f32;
+        let mut j: u32 = 0u32;
+        while j < DIAM {
+            let s = src_row[(tx + j) as usize];
+            let d = dst_row[(tx + j) as usize];
+            m1 += s;
+            m2 += d;
+            sq = fma(s, s, fma(d, d, sq));
+            s12 = fma(s, d, s12);
+            j += 1u32;
+        }
+        m1 *= INV_DIAM;
+        m2 *= INV_DIAM;
+        sq *= INV_DIAM;
+        s12 *= INV_DIAM;
+        let buf_idx = (k * TX + tx) as usize;
+        buf_mu1[buf_idx] = m1;
+        buf_mu2[buf_idx] = m2;
+        buf_sq[buf_idx] = sq;
+        buf_s12[buf_idx] = s12;
+        sum_m1 += m1;
+        sum_m2 += m2;
+        sum_sq += sq;
+        sum_s12 += s12;
+        k += 1u32;
+    }
+
+    let mut slot: u32 = 0u32;
+    let mut y: u32 = y_start;
+    while y < y_end {
+        let mu1 = sum_m1 * INV_DIAM;
+        let mu2 = sum_m2 * INV_DIAM;
+        let ssq = sum_sq * INV_DIAM;
+        let s12_v = sum_s12 * INV_DIAM;
+
+        let off = (y as usize) * w + (col as usize);
+        if in_bounds {
+            mu1_all[ch_base + off] = mu1;
+            mu2_all[ch_base + off] = mu2;
+            ssq_all[ch_base + off] = ssq;
+            s12_all[ch_base + off] = s12_v;
+        }
+        a0 += mu1 as f64; // the f64 work
+
+        let buf_idx = (slot * TX + tx) as usize;
+        let old_m1 = buf_mu1[buf_idx];
+        let old_m2 = buf_mu2[buf_idx];
+        let old_sq = buf_sq[buf_idx];
+        let old_s12 = buf_s12[buf_idx];
+
+        let raw_y = (y + R + 1u32 + period_y) % period_y;
+        let y_in = if raw_y < height { raw_y } else { period_y - raw_y };
+        sync_cube();
+        let mut i: u32 = 0u32;
+        while i * TX + tx < TILE_COLS {
+            let load_x = i * TX + tx;
+            let raw_x = (col_base + load_x + period_x - R) % period_x;
+            let gx = if raw_x < width { raw_x } else { period_x - raw_x };
+            let off2 = (y_in as usize) * w + (gx as usize);
+            let s_val = if channel == 0u32 {
+                src_a[off2]
+            } else if channel == 1u32 {
+                src_b[off2]
+            } else {
+                src_c[off2]
+            };
+            let d_val = if channel == 0u32 {
+                dst_a[off2]
+            } else if channel == 1u32 {
+                dst_b[off2]
+            } else {
+                dst_c[off2]
+            };
+            src_row[load_x as usize] = s_val;
+            dst_row[load_x as usize] = d_val;
+            i += 1u32;
+        }
+        sync_cube();
+        let mut nm1 = 0.0_f32;
+        let mut nm2 = 0.0_f32;
+        let mut nsq = 0.0_f32;
+        let mut ns12 = 0.0_f32;
+        let mut j: u32 = 0u32;
+        while j < DIAM {
+            let s = src_row[(tx + j) as usize];
+            let d = dst_row[(tx + j) as usize];
+            nm1 += s;
+            nm2 += d;
+            nsq = fma(s, s, fma(d, d, nsq));
+            ns12 = fma(s, d, ns12);
+            j += 1u32;
+        }
+        nm1 *= INV_DIAM;
+        nm2 *= INV_DIAM;
+        nsq *= INV_DIAM;
+        ns12 *= INV_DIAM;
+        sum_m1 = sum_m1 + nm1 - old_m1;
+        sum_m2 = sum_m2 + nm2 - old_m2;
+        sum_sq = sum_sq + nsq - old_sq;
+        sum_s12 = sum_s12 + ns12 - old_s12;
+        buf_mu1[buf_idx] = nm1;
+        buf_mu2[buf_idx] = nm2;
+        buf_sq[buf_idx] = nsq;
+        buf_s12[buf_idx] = ns12;
+        slot = (slot + 1u32) % DIAM;
+        y += 1u32;
+    }
+
+    if !in_bounds {
+        terminate!();
+    }
+    let slot_idx_us = (channel as usize) * n_strips_us * pw + (strip as usize) * pw + (col as usize);
+    partials_f64[slot_idx_us] = a0;
+}
+
 // ───────────── minimized producer: blur-only (no f64, no partials, no SSIM math) ─────────────
 // Same shared-memory cooperative load + sliding-window 11×11 mirror box blur as
 // `fused_features_kernel_persist`, but stripped to ONLY write the mu1/mu2/ssq/s12
@@ -1207,7 +1435,7 @@ fn run<R: Runtime>(
 /// back and compared to a CPU blur reference, then fed through per_scale+upsample.
 /// Reports BOTH the persist-plane divergence (producer correctness) and the final
 /// acc divergence (full chain). This is the HANDOFF's decisive experiment.
-fn run_feature<R: Runtime>(label: &str, width: usize, height: usize, blur_only: bool) -> bool {
+fn run_feature<R: Runtime>(label: &str, width: usize, height: usize, mode: FeatMode) -> bool {
     let client = R::client(&Default::default());
 
     let mut padded_w = simd_padded_width(width);
@@ -1280,7 +1508,7 @@ fn run_feature<R: Runtime>(label: &str, width: usize, height: usize, blur_only: 
         let p_s12 = client.empty(plane_len * core::mem::size_of::<f32>());
 
         let cube_x = (pw as u32).div_ceil(TX).max(1);
-        if blur_only {
+        if mode == FeatMode::BlurOnly {
             unsafe {
                 blur_planes_kernel::launch_unchecked::<R>(
                     &client,
@@ -1292,6 +1520,31 @@ fn run_feature<R: Runtime>(label: &str, width: usize, height: usize, blur_only: 
                     ArrayArg::from_raw_parts(dst_b.clone(), pt),
                     ArrayArg::from_raw_parts(src_c.clone(), pt),
                     ArrayArg::from_raw_parts(dst_c.clone(), pt),
+                    ArrayArg::from_raw_parts(p_mu1.clone(), plane_len),
+                    ArrayArg::from_raw_parts(p_mu2.clone(), plane_len),
+                    ArrayArg::from_raw_parts(p_ssq.clone(), plane_len),
+                    ArrayArg::from_raw_parts(p_s12.clone(), plane_len),
+                    pw as u32,
+                    ph as u32,
+                    n_strips,
+                    pt as u32,
+                );
+            }
+        } else if mode == FeatMode::BlurF64 {
+            let n_pf64 = pw * (n_strips as usize) * 3;
+            let pf64 = client.empty(n_pf64 * core::mem::size_of::<f64>());
+            unsafe {
+                blur_f64_kernel::launch_unchecked::<R>(
+                    &client,
+                    CubeCount::Static(cube_x, n_strips, 3),
+                    CubeDim::new_3d(TX, 1, 1),
+                    ArrayArg::from_raw_parts(src_a.clone(), pt),
+                    ArrayArg::from_raw_parts(dst_a.clone(), pt),
+                    ArrayArg::from_raw_parts(src_b.clone(), pt),
+                    ArrayArg::from_raw_parts(dst_b.clone(), pt),
+                    ArrayArg::from_raw_parts(src_c.clone(), pt),
+                    ArrayArg::from_raw_parts(dst_c.clone(), pt),
+                    ArrayArg::from_raw_parts(pf64.clone(), n_pf64),
                     ArrayArg::from_raw_parts(p_mu1.clone(), plane_len),
                     ArrayArg::from_raw_parts(p_mu2.clone(), plane_len),
                     ArrayArg::from_raw_parts(p_ssq.clone(), plane_len),
@@ -1420,7 +1673,7 @@ fn run_feature<R: Runtime>(label: &str, width: usize, height: usize, blur_only: 
     let plane_pass = worst_plane_err <= 1e-3;
     let acc_pass = max_err <= 1e-3;
     let (ws, wp, wx, wy) = worst_plane_where;
-    let mode = if blur_only { "blur-only " } else { "feature-full" };
+    let mode = mode.label();
     println!(
         "  [{mode}] {label} ({width}x{height}): \
          PLANES worst_err={worst_plane_err:.6} ({plane_div_total} slots>1e-3) \
@@ -1483,13 +1736,19 @@ fn main() {
     // The faithful producer: the real feature kernel writes the persist planes.
     println!("── producer = feature-kernel (fused_features_kernel_persist) ──");
     for &(w, h) in &[(64usize, 64usize), (96, 80), (128, 128)] {
-        all_pass &= run_feature::<Backend>(&format!("{w}x{h}"), w, h, false);
+        all_pass &= run_feature::<Backend>(&format!("{w}x{h}"), w, h, FeatMode::Full);
     }
 
-    // Minimized producer: blur-only (no f64, no partials, no SSIM math).
+    // Minimized producer: blur-only (no f64, no partials, no SSIM math). PASSES on Metal.
     println!("── producer = blur-only (shared-mem sliding-window blur, no f64/features) ──");
     for &(w, h) in &[(64usize, 64usize), (96, 80), (128, 128)] {
-        all_pass &= run_feature::<Backend>(&format!("{w}x{h}"), w, h, true);
+        all_pass &= run_feature::<Backend>(&format!("{w}x{h}"), w, h, FeatMode::BlurOnly);
+    }
+
+    // The f64 isolator: blur-only + ONE f64 accumulator + f64 buffer write.
+    println!("── producer = blur+f64 (blur-only + a single f64 accumulator) ──");
+    for &(w, h) in &[(64usize, 64usize), (96, 80), (128, 128)] {
+        all_pass &= run_feature::<Backend>(&format!("{w}x{h}"), w, h, FeatMode::BlurF64);
     }
 
     if all_pass {
