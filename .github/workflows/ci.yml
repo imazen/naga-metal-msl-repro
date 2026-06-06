@@ -1,8 +1,11 @@
 name: repro
 
-# The iterate loop: patch vendor/wgpu/naga (the WGSL->MSL backend), push, and
-# the `metal` job below re-runs on a real Apple-Silicon Metal device. The
-# `vulkan` job is the control — the same WGSL is correct there.
+# RESOLVED: the trigger is `f64`, which Apple Metal does not support (no
+# SHADER_F64). cubecl emits f64 WGSL anyway; wgpu rejects it at
+# create_shader_module; the launch no-ops and leaves buffers uninitialized ->
+# garbage. naga is innocent. See README.md. The `metal` job stays red until the
+# producer uses f32 (zensim-gpu fix) or cubecl downgrades/errors on f64. The
+# `vulkan` job is the control — those backends have f64, so they pass.
 on:
   push:
   pull_request:
@@ -10,9 +13,8 @@ on:
 
 jobs:
   metal:
-    # NOTE: currently PASSES — the isolated 3 kernels are NOT the bug (see README
-    # STATUS). Will go red once the upstream producing kernels are added and the
-    # trigger is captured; that's the worker's bisect target.
+    # FAILS (expected): the feature/blur+f64 producers use f64, which Metal can't
+    # validate. host-upload / relay / blur-only producers PASS. See README.
     name: Metal (macos-latest, Apple Silicon)
     runs-on: macos-latest
     steps:

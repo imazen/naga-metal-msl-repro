@@ -1,5 +1,20 @@
 # HANDOFF — how to track down the upstream trigger
 
+> ## ✅ RESOLVED (2026-06-05) — the trigger is `f64`, see [README.md](./README.md)
+>
+> The playbook below led to the answer. The upstream producer
+> `fused_features_kernel_persist` was ported into `src/main.rs` and bisected on
+> Metal CI: stripping it to a blur-only kernel **PASSES**, and adding back a
+> single `f64` accumulator **FAILS**. Apple Metal has no `f64`; cubecl emits it
+> anyway; wgpu rejects the module (`Using f64 values requires … FLOAT64`); the
+> launch no-ops; the persist planes are left uninitialized → the `~1.098`
+> garbage. **naga is innocent** (its validator correctly refuses `f64`). The fix
+> is `f32` partials in zensim-gpu `fused.rs` (and/or cubecl downgrading/erroring
+> on `f64` when the device lacks `SHADER_F64`). The historical playbook follows.
+
+---
+
+
 This repo's isolated 3-kernel chain (`src/main.rs`) does **not** reproduce on
 Metal (CI-confirmed PASS at 64×64 / 96×80 / 128×128). So `per_scale_weighted_ssim`
 and `pow2x_upsample_add` are correctly translated on Metal **with clean,
