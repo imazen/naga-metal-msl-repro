@@ -11,6 +11,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Superseded runs only waste runner queue — particularly the macOS
+# jobs, which wait on GitHub's scarcest pool. Only the newest
+# commit's run matters per ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   metal:
     # FAILS (expected): the feature/blur+f64 producers use f64, which Metal can't
