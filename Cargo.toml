@@ -19,7 +19,7 @@ cubecl = { package = "zenforks-cubecl", version = "0.10.1", default-features = f
 # Surfaces cubecl-wgpu's `log::error!("WGSL compilation failed …")` so a silent
 # shader-compile failure on Metal (e.g. an f64 module wgpu/naga rejects) is
 # visible instead of manifesting only as uninitialized-buffer garbage downstream.
-env_logger = "0.11.10"
+env_logger = "0.11.11"
 
 [[bin]]
 name = "naga-metal-msl-repro"
