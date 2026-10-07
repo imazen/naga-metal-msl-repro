@@ -25,7 +25,7 @@ jobs:
     name: Metal (macos-latest, Apple Silicon)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
@@ -46,7 +46,7 @@ jobs:
         run: cargo run --release --no-default-features --features wgpu > metal_run.log 2>&1 || true
       - name: Upload Metal WGSL artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: metal-wgsl
           path: metal_run.log
@@ -61,7 +61,7 @@ jobs:
     name: Vulkan (ubuntu, llvmpipe) — control, EXPECTED PASS
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
